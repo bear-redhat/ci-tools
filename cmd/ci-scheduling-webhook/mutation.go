@@ -301,7 +301,17 @@ func mutatePod(w http.ResponseWriter, r *http.Request) {
 			klog.Errorf("No node precludes will be set in pod due to error: %v", err)
 		}
 
+		highPerfPod := false
 		if podClass == PodClassBuilds {
+			// Use high performance nodes for large pods
+			memoryThreshold := resource.MustParse("32Gi")
+			cpuThreshold := resource.MustParse("13")
+			for _, container := range pod.Spec.Containers {
+				if container.Resources.Requests.Memory().Cmp(memoryThreshold) >= 0 || container.Resources.Requests.Cpu().Cmp(cpuThreshold) >= 0 {
+					klog.Infof("Pod %s in namespace %s requests high performance node", podName, namespace)
+					highPerfPod = true
+				}
+			}
 			// If this is a build pod, prefer to be scheduled to spot instances for cost efficiency.
 			// If there are no spot instances, this will be ignored.
 			affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution = []corev1.PreferredSchedulingTerm{
@@ -330,6 +340,17 @@ func mutatePod(w http.ResponseWriter, r *http.Request) {
 			}
 
 			addPatchEntry("add", "/spec/affinity", unstructuredAffinity)
+		}
+
+		if highPerfPod {
+			tolerations := pod.Spec.Tolerations
+			tolerations = append(tolerations, corev1.Toleration{
+				Key:      "ci-instance-type",
+				Operator: corev1.TolerationOpEqual,
+				Value:    "high-perf",
+				Effect:   corev1.TaintEffectNoSchedule,
+			})
+			addPatchEntry("add", "/spec/tolerations", tolerations)
 		}
 
 		// There is currently an issue with cluster scale up where pods are stacked up, unschedulable.
